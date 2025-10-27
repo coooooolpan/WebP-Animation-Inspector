@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebP Animation Inspector</title>
+    <link rel="stylesheet" href="style.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css"
+    />
+  </head>
+  <body>
+    <div class="app">
+      <header class="app__header">
+        <div>
+          <h1>WebP Animation Inspector</h1>
+          <p>离线解析、预览 WebP 动画，并尝试本地压缩。</p>
+        </div>
+        <button id="themeToggle" class="icon-button" aria-label="切换主题">
+          <i class="ri-moon-line" aria-hidden="true"></i>
+        </button>
+      </header>
+
+      <section class="uploader" id="dropzone">
+        <div class="uploader__icon" aria-hidden="true">
+          <i class="ri-image-2-line"></i>
+        </div>
+        <h2>拖拽 WebP 动画到此处</h2>
+        <p>或点击按钮选择文件（完全本地运行，不上传）</p>
+        <button id="filePicker" class="primary-button">选择 WebP 文件</button>
+        <input id="fileInput" type="file" accept="image/webp" hidden />
+      </section>
+
+      <section class="content hidden" id="content">
+        <div class="panel panel--left">
+          <div class="panel__header">
+            <h3>原始预览</h3>
+            <button id="clearButton" class="icon-button" aria-label="清除文件">
+              <i class="ri-delete-bin-line" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div class="preview">
+            <canvas id="previewCanvas"></canvas>
+            <div class="preview__badge" id="frameBadge"></div>
+          </div>
+          <div class="playback">
+            <div class="playback__controls">
+              <button id="prevFrame" class="icon-button" title="上一帧">
+                <i class="ri-skip-back-line" aria-hidden="true"></i>
+              </button>
+              <button id="togglePlay" class="primary-button">暂停</button>
+              <button id="nextFrame" class="icon-button" title="下一帧">
+                <i class="ri-skip-forward-line" aria-hidden="true"></i>
+              </button>
+            </div>
+            <div class="playback__speeds">
+              <button data-speed="0.5" class="chip">0.5x</button>
+              <button data-speed="1" class="chip chip--active">1x</button>
+              <button data-speed="2" class="chip">2x</button>
+            </div>
+            <input id="frameSlider" type="range" min="0" value="0" />
+          </div>
+          <ul class="metrics" id="metricsList"></ul>
+        </div>
+
+        <div class="panel panel--right">
+          <div class="panel__header">
+            <h3>压缩设置</h3>
+          </div>
+          <div class="control-group">
+            <label for="fpsSlider">输出帧率 <span id="fpsLabel">0 fps</span></label>
+            <input id="fpsSlider" type="range" min="1" max="60" value="24" />
+            <small>范围 1 ~ 原始 FPS，降低帧率可减少文件大小。</small>
+          </div>
+          <div class="control-group">
+            <label for="qualitySlider"
+              >输出质量 <span id="qualityLabel">80</span></label
+            >
+            <input
+              id="qualitySlider"
+              type="range"
+              min="1"
+              max="100"
+              value="80"
+            />
+            <small>100 表示无损，建议 60 ~ 90。</small>
+          </div>
+          <div class="estimate" id="estimateBox">
+            <div>预计体积</div>
+            <strong id="estimateSize">0 KB</strong>
+            <small>基于帧率与质量的估算值，实际结果以压缩为准。</small>
+          </div>
+          <button id="compressButton" class="primary-button">
+            执行压缩
+          </button>
+          <div class="progress hidden" id="progressBox">
+            <div class="progress__meta">
+              <span>压缩中...</span>
+              <span id="progressValue">0%</span>
+            </div>
+            <div class="progress__bar">
+              <div class="progress__bar-fill" id="progressFill"></div>
+            </div>
+          </div>
+          <div class="result" id="resultBox"></div>
+          <details class="log">
+            <summary>压缩日志</summary>
+            <pre id="logOutput">等待任务</pre>
+          </details>
+        </div>
+      </section>
+
+      <footer class="app__footer">
+        <p>
+          提示：压缩动画 WebP 需要浏览器支持 ImageDecoder 与 WebAssembly，
+          若浏览器不支持，将仅生成首帧的 WebP 文件。
+        </p>
+      </footer>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
