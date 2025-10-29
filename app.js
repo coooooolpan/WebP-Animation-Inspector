@@ -193,6 +193,50 @@ function computeScaleFactor(hasAnimation, qualityNormalized) {
   return Math.max(0.35, qualityNormalized + 0.05);
 }
 
+const WEBP_WASM_MODULE_URL =
+  "https://cdn.jsdelivr.net/npm/@wasm-codecs/webp@1.1.0/dist/webp.esm.js";
+let wasmWebpCodecPromise = null;
+
+async function ensureWasmWebpCodec() {
+  if (!wasmWebpCodecPromise) {
+    wasmWebpCodecPromise = import(WEBP_WASM_MODULE_URL)
+      .then(async (mod) => {
+        const factory =
+          mod?.createWebp ||
+          mod?.default?.createWebp ||
+          (typeof mod?.default === "function" ? mod.default : null);
+        if (typeof factory !== "function") {
+          throw new Error("未找到 createWebp 工厂函数");
+        }
+        return factory();
+      })
+      .catch((error) => {
+        wasmWebpCodecPromise = null;
+        throw error;
+      });
+  }
+  return wasmWebpCodecPromise;
+}
+
+async function bitmapToImageData(bitmap, width, height) {
+  const canvas =
+    typeof OffscreenCanvas !== "undefined"
+      ? new OffscreenCanvas(width, height)
+      : (() => {
+          const c = document.createElement("canvas");
+          c.width = width;
+          c.height = height;
+          return c;
+        })();
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    throw new Error("无法创建位图转换上下文。");
+  }
+  context.clearRect(0, 0, width, height);
+  context.drawImage(bitmap, 0, 0, width, height);
+  return context.getImageData(0, 0, width, height);
+}
+
 function dataUrlToBlob(dataUrl) {
   const [header, data] = dataUrl.split(",");
   const match = header.match(/data:(.*?);/);
@@ -322,50 +366,6 @@ function resampleFramesForFps(frames, metadata, targetFps) {
     }
   }
   return resampled;
-}
-
-async function encodeAnimatedWebp(frames, quality) {
-  if (!(await supportsAnimatedWebpEncoding())) {
-    throw new Error("当前浏览器不支持动画 WebP 编码。");
-  }
-  if (!frames.length) {
-    throw new Error("缺少可编码的帧。");
-  }
-  const buffers = [];
-  return new Promise((resolve, reject) => {
-    const encoder = new ImageEncoder({
-      type: "image/webp",
-      quality,
-      alpha: true,
-      output(chunk) {
-        buffers.push(chunk.data.slice(0));
-      },
-      error(error) {
-        reject(error);
-      }
-    });
-
-    (async () => {
-      try {
-        let timestamp = 0;
-        for (let i = 0; i < frames.length; i += 1) {
-          const frame = frames[i];
-          const durationMs = Math.max(1, Math.round(frame.duration));
-          const durationUs = durationMs * 1000;
-          await encoder.encode(frame.bitmap, {
-            duration: durationUs,
-            timestamp
-          });
-          timestamp += durationUs;
-        }
-        await encoder.flush();
-        encoder.close();
-        resolve(new Blob(buffers, { type: "image/webp" }));
-      } catch (error) {
-        reject(error);
-      }
-    })();
-  });
 }
 
 function estimateSize(meta, settings) {
@@ -719,86 +719,63 @@ async function compressWebp() {
     }
 
     const isAnimatedSource = hasAnimation && frameCount > 1;
-    const canEncodeAnimation = await supportsAnimatedWebpEncoding();
-    if (isAnimatedSource && !canEncodeAnimation) {
-      throw new Error(
-        "当前浏览器不支持动画 WebP 编码，请使用支持 ImageEncoder 的新版 Chromium 浏览器。"
-      );
-    }
-    const canExportAnimation = isAnimatedSource && canEncodeAnimation;
-    let blob;
+    const codecQuality = Math.max(1, Math.min(100, Math.round(state.settings.quality)));
+    const codec = await ensureWasmWebpCodec();
+    dom.progressFill.style.width = "25%";
+    dom.progressValue.textContent = "25%";
 
-    if (canExportAnimation) {
-      dom.progressFill.style.width = "30%";
-      dom.progressValue.textContent = "30%";
-      const managedBitmaps = [];
-      const scaledFrames = [];
-      for (let i = 0; i < resampledFrames.length; i += 1) {
-        const frame = resampledFrames[i];
-        const { bitmap: scaledBitmap, release } = await getScaledBitmap(
-          frame.bitmap,
-          targetWidth,
-          targetHeight
-        );
-        scaledFrames.push({
-          bitmap: scaledBitmap,
+    const scaledFrames = [];
+    for (let i = 0; i < resampledFrames.length; i += 1) {
+      const frame = resampledFrames[i];
+      const { bitmap: scaledBitmap, release } = await getScaledBitmap(
+        frame.bitmap,
+        targetWidth,
+        targetHeight
+      );
+      scaledFrames.push({
+        bitmap: scaledBitmap,
+        release,
+        duration: Math.max(1, Math.round(frame.duration))
+      });
+      const progress = 25 + Math.round(((i + 1) / resampledFrames.length) * 25);
+      dom.progressFill.style.width = `${progress}%`;
+      dom.progressValue.textContent = `${progress}%`;
+    }
+
+    let blob;
+    if (isAnimatedSource) {
+      const framesForCodec = [];
+      for (let i = 0; i < scaledFrames.length; i += 1) {
+        const frame = scaledFrames[i];
+        const imageData = await bitmapToImageData(frame.bitmap, targetWidth, targetHeight);
+        framesForCodec.push({
+          image: imageData,
           duration: frame.duration
         });
-        managedBitmaps.push({ bitmap: scaledBitmap, release });
-        const progress = 30 + Math.round(((i + 1) / resampledFrames.length) * 25);
+        const progress = 50 + Math.round(((i + 1) / scaledFrames.length) * 20);
         dom.progressFill.style.width = `${progress}%`;
         dom.progressValue.textContent = `${progress}%`;
       }
-      blob = await encodeAnimatedWebp(scaledFrames, quality);
-      managedBitmaps.forEach(({ bitmap, release }) => {
-        if (release && bitmap.close) bitmap.close();
+      const encoded = await codec.encodeAnimated(framesForCodec, {
+        quality: codecQuality,
+        loop: 0
       });
-      dom.progressFill.style.width = "75%";
-      dom.progressValue.textContent = "75%";
+      blob = new Blob([encoded], { type: "image/webp" });
     } else {
-      const staticFrame = resampledFrames[0];
-      let drawable = staticFrame?.bitmap || firstBitmap;
-      let releaseDrawable = false;
-      if (!drawable) {
-        const fallbackBitmap = await loadBitmapFromFile(state.file);
-        drawable = fallbackBitmap;
-        releaseDrawable = true;
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("无法创建绘图上下文。");
-      }
-      const requiresScale =
-        getBitmapWidth(drawable) !== targetWidth ||
-        getBitmapHeight(drawable) !== targetHeight ||
-        scaleFactor !== 1;
-      if (requiresScale) {
-        const { bitmap: scaledBitmap, release } = await getScaledBitmap(
-          drawable,
-          targetWidth,
-          targetHeight
-        );
-        ctx.drawImage(scaledBitmap, 0, 0, targetWidth, targetHeight);
-        if (release && scaledBitmap.close) scaledBitmap.close();
-      } else {
-        ctx.drawImage(drawable, 0, 0, targetWidth, targetHeight);
-      }
-      dom.progressFill.style.width = "40%";
-      dom.progressValue.textContent = "40%";
-      blob = await canvasToWebp(canvas, quality);
-      if (releaseDrawable && drawable?.close) {
-        drawable.close();
-      }
-      dom.progressFill.style.width = "75%";
-      dom.progressValue.textContent = "75%";
+      const frame = scaledFrames[0];
+      const imageData = await bitmapToImageData(frame.bitmap, targetWidth, targetHeight);
+      const encoded = await codec.encode(imageData, {
+        quality: codecQuality
+      });
+      blob = new Blob([encoded], { type: "image/webp" });
     }
 
-    if (!blob) {
-      throw new Error("压缩输出为空，请重试。");
-    }
+    scaledFrames.forEach(({ bitmap, release }) => {
+      if (release && bitmap.close) bitmap.close();
+    });
+
+    dom.progressFill.style.width = "85%";
+    dom.progressValue.textContent = "85%";
 
     if (state.resultUrl) {
       URL.revokeObjectURL(state.resultUrl);
@@ -985,7 +962,16 @@ log(
   const animatedSupport = await supportsAnimatedWebpEncoding();
   log(
     animatedSupport
-      ? "支持动画 WebP 编码，导出将保留完整动画。"
-      : "动画 WebP 编码不可用，将在导出时仅保留首帧。"
+      ? "浏览器原生支持动画 WebP 编码，可与 WASM 编码器共同使用。"
+      : "浏览器原生动画 WebP 编码不可用，将改用 WASM 编码器处理动画。"
   );
+})();
+
+(async () => {
+  try {
+    await ensureWasmWebpCodec();
+    log("WASM WebP 编码器加载完成，可离线压缩动画。");
+  } catch (error) {
+    log(`WASM WebP 编码器加载失败：${error.message}`);
+  }
 })();
