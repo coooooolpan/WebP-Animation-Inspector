@@ -13,39 +13,48 @@ const state = {
   }
 };
 
-const dom = {
-  body: document.body,
-  dropzone: document.getElementById("dropzone"),
-  fileInput: document.getElementById("fileInput"),
-  filePicker: document.getElementById("filePicker"),
-  content: document.getElementById("content"),
-  clearButton: document.getElementById("clearButton"),
-  previewCanvas: document.getElementById("previewCanvas"),
-  frameBadge: document.getElementById("frameBadge"),
-  metricsList: document.getElementById("metricsList"),
-  togglePlay: document.getElementById("togglePlay"),
-  prevFrame: document.getElementById("prevFrame"),
-  nextFrame: document.getElementById("nextFrame"),
-  frameSlider: document.getElementById("frameSlider"),
-  playbackSpeedButtons: document.querySelectorAll(".playback__speeds button"),
-  fpsSlider: document.getElementById("fpsSlider"),
-  fpsLabel: document.getElementById("fpsLabel"),
-  qualitySlider: document.getElementById("qualitySlider"),
-  qualityLabel: document.getElementById("qualityLabel"),
-  estimateSize: document.getElementById("estimateSize"),
-  estimateBox: document.getElementById("estimateBox"),
-  compressButton: document.getElementById("compressButton"),
-  progressBox: document.getElementById("progressBox"),
-  progressFill: document.getElementById("progressFill"),
-  progressValue: document.getElementById("progressValue"),
-  resultBox: document.getElementById("resultBox"),
-  logOutput: document.getElementById("logOutput"),
-  themeToggle: document.getElementById("themeToggle")
-};
+const dom = {};
+
+function initDom() {
+  dom.body = document.body;
+  dom.dropzone = document.getElementById("dropzone");
+  dom.fileInput = document.getElementById("fileInput");
+  dom.filePicker = document.getElementById("filePicker");
+  dom.content = document.getElementById("content");
+  dom.clearButton = document.getElementById("clearButton");
+  dom.previewCanvas = document.getElementById("previewCanvas");
+  dom.frameBadge = document.getElementById("frameBadge");
+  dom.metricsList = document.getElementById("metricsList");
+  dom.togglePlay = document.getElementById("togglePlay");
+  dom.prevFrame = document.getElementById("prevFrame");
+  dom.nextFrame = document.getElementById("nextFrame");
+  dom.frameSlider = document.getElementById("frameSlider");
+  dom.playbackSpeedButtons = document.querySelectorAll(
+    ".playback__speeds button"
+  );
+  dom.fpsSlider = document.getElementById("fpsSlider");
+  dom.fpsLabel = document.getElementById("fpsLabel");
+  dom.qualitySlider = document.getElementById("qualitySlider");
+  dom.qualityLabel = document.getElementById("qualityLabel");
+  dom.estimateSize = document.getElementById("estimateSize");
+  dom.estimateBox = document.getElementById("estimateBox");
+  dom.compressButton = document.getElementById("compressButton");
+  dom.progressBox = document.getElementById("progressBox");
+  dom.progressFill = document.getElementById("progressFill");
+  dom.progressValue = document.getElementById("progressValue");
+  dom.resultBox = document.getElementById("resultBox");
+  dom.logOutput = document.getElementById("logOutput");
+  dom.themeToggle = document.getElementById("themeToggle");
+}
 
 function log(message) {
   const timestamp = new Date().toLocaleTimeString();
-  dom.logOutput.textContent = `[${timestamp}] ${message}\n${dom.logOutput.textContent}`;
+  if (dom.logOutput) {
+    dom.logOutput.textContent = `[${timestamp}] ${message}\n${dom.logOutput.textContent}`;
+  } else if (typeof console !== "undefined") {
+    // DOM 未就绪时退回控制台，避免初始化期间抛错
+    console.log(`[${timestamp}] ${message}`);
+  }
 }
 
 function getBitmapWidth(source) {
@@ -193,28 +202,76 @@ function computeScaleFactor(hasAnimation, qualityNormalized) {
   return Math.max(0.35, qualityNormalized + 0.05);
 }
 
-const WEBP_WASM_MODULE_URL =
-  "https://cdn.jsdelivr.net/npm/@wasm-codecs/webp@1.1.0/dist/webp.esm.js";
+function resolveAssetUrl(relativePath) {
+  if (typeof import.meta !== "undefined" && import.meta.url) {
+    return new URL(relativePath, import.meta.url).href;
+  }
+  if (typeof document !== "undefined") {
+    const currentScript = document.currentScript;
+    if (currentScript?.src) {
+      return new URL(relativePath, currentScript.src).href;
+    }
+    const scripts = document.getElementsByTagName("script");
+    for (let i = scripts.length - 1; i >= 0; i -= 1) {
+      const script = scripts[i];
+      if (script && script.src && script.src.includes("app.js")) {
+        return new URL(relativePath, script.src).href;
+      }
+    }
+  }
+  if (typeof window !== "undefined" && window.location?.href) {
+    return new URL(relativePath, window.location.href).href;
+  }
+  return relativePath;
+}
+
+const LOCAL_WEBP_MODULE_URL = resolveAssetUrl("./libs/webp/webp_enc.mjs");
+const LOCAL_WEBP_WASM_URL = resolveAssetUrl("./libs/webp/webp_enc.wasm");
+const REMOTE_WEBP_MODULE_URL =
+  "https://unpkg.com/@squoosh/lib@latest/build/webp_enc.mjs";
+const REMOTE_WEBP_WASM_URL =
+  "https://unpkg.com/@squoosh/lib@latest/build/webp_enc.wasm";
 let wasmWebpCodecPromise = null;
 
-async function ensureWasmWebpCodec() {
-  if (!wasmWebpCodecPromise) {
-    wasmWebpCodecPromise = import(WEBP_WASM_MODULE_URL)
-      .then(async (mod) => {
-        const factory =
-          mod?.createWebp ||
-          mod?.default?.createWebp ||
-          (typeof mod?.default === "function" ? mod.default : null);
-        if (typeof factory !== "function") {
-          throw new Error("未找到 createWebp 工厂函数");
-        }
-        return factory();
-      })
-      .catch((error) => {
-        wasmWebpCodecPromise = null;
-        throw error;
-      });
+async function loadWasmCodec(moduleUrl, wasmUrl) {
+  const mod = await import(moduleUrl);
+  const factory =
+    mod?.createWebp ||
+    mod?.default?.createWebp ||
+    (typeof mod?.default === "function" ? mod.default : null) ||
+    mod?.default;
+  if (typeof factory !== "function") {
+    throw new Error("未找到 createWebp 工厂函数");
   }
+  return factory({
+    locateFile(path) {
+      if (path.endsWith(".wasm")) {
+        return wasmUrl;
+      }
+      return new URL(path, moduleUrl).href;
+    }
+  });
+}
+
+async function ensureWasmWebpCodec() {
+  if (wasmWebpCodecPromise) return wasmWebpCodecPromise;
+  wasmWebpCodecPromise = loadWasmCodec(
+    LOCAL_WEBP_MODULE_URL,
+    LOCAL_WEBP_WASM_URL
+  ).catch(async (error) => {
+    console.warn("本地 WebP WASM 加载失败，尝试使用在线 CDN。", error);
+    log(
+      "未在本地找到 WebP WASM 资源，尝试从 CDN 加载（需网络连接）。"
+    );
+    return loadWasmCodec(REMOTE_WEBP_MODULE_URL, REMOTE_WEBP_WASM_URL);
+  });
+  wasmWebpCodecPromise.catch((error) => {
+    console.error("Failed to load WebP WASM codec", error);
+    log(
+      "WASM WebP 模块加载失败，请确认 libs/webp 下存在 webp_enc.mjs / webp_enc.wasm，或确保可以访问 CDN。"
+    );
+    wasmWebpCodecPromise = null;
+  });
   return wasmWebpCodecPromise;
 }
 
@@ -800,6 +857,7 @@ async function compressWebp() {
 
     resultLines.push(`结果：${formatBytes(blob.size)}`);
 
+    const canExportAnimation = isAnimatedSource;
     const downloadLabel = canExportAnimation
       ? "下载压缩后的动画 WebP"
       : "下载压缩后的 WebP";
@@ -841,137 +899,155 @@ function applyTheme(isDark) {
   }
 }
 
-dom.filePicker.addEventListener("click", () => dom.fileInput.click());
-dom.fileInput.addEventListener("change", (event) => {
-  const [file] = event.target.files || [];
-  if (file) handleFile(file);
-  dom.fileInput.value = "";
-});
+function bindEvents() {
+  dom.filePicker?.addEventListener("click", () => dom.fileInput?.click());
 
-["dragenter", "dragover"].forEach((type) => {
-  dom.dropzone.addEventListener(type, (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    dom.dropzone.classList.add("dragover");
+  dom.fileInput?.addEventListener("change", (event) => {
+    const [file] = event.target.files || [];
+    if (file) handleFile(file);
+    event.target.value = "";
   });
-});
 
-["dragleave", "dragend"].forEach((type) => {
-  dom.dropzone.addEventListener(type, (event) => {
-    event.preventDefault();
-    dom.dropzone.classList.remove("dragover");
-  });
-});
+  if (dom.dropzone) {
+    ["dragenter", "dragover"].forEach((type) => {
+      dom.dropzone.addEventListener(type, (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dom.dropzone.classList.add("dragover");
+      });
+    });
 
-dom.dropzone.addEventListener("drop", (event) => {
-  event.preventDefault();
-  dom.dropzone.classList.remove("dragover");
-  const file = event.dataTransfer?.files?.[0];
-  if (file) handleFile(file);
-});
+    ["dragleave", "dragend"].forEach((type) => {
+      dom.dropzone.addEventListener(type, (event) => {
+        event.preventDefault();
+        dom.dropzone.classList.remove("dragover");
+      });
+    });
 
-dom.clearButton.addEventListener("click", () => resetState());
-
-dom.togglePlay.addEventListener("click", () => {
-  if (state.frames.length <= 1) return;
-  state.isPlaying = !state.isPlaying;
-  dom.togglePlay.textContent = state.isPlaying ? "暂停" : "播放";
-  if (state.isPlaying) {
-    scheduleNextFrame();
-  } else {
-    resetPlaybackTimer();
+    dom.dropzone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dom.dropzone.classList.remove("dragover");
+      const file = event.dataTransfer?.files?.[0];
+      if (file) handleFile(file);
+    });
   }
-});
 
-dom.prevFrame.addEventListener("click", () => {
-  if (state.frames.length <= 1) return;
-  resetPlaybackTimer();
-  state.isPlaying = false;
-  dom.togglePlay.textContent = "播放";
-  state.frameIndex =
-    (state.frameIndex - 1 + state.frames.length) % state.frames.length;
-  drawFrame(state.frameIndex);
-});
+  dom.clearButton?.addEventListener("click", () => resetState());
 
-dom.nextFrame.addEventListener("click", () => {
-  if (state.frames.length <= 1) return;
-  resetPlaybackTimer();
-  state.isPlaying = false;
-  dom.togglePlay.textContent = "播放";
-  state.frameIndex = (state.frameIndex + 1) % state.frames.length;
-  drawFrame(state.frameIndex);
-});
+  dom.togglePlay?.addEventListener("click", () => {
+    if (state.frames.length <= 1) return;
+    state.isPlaying = !state.isPlaying;
+    dom.togglePlay.textContent = state.isPlaying ? "暂停" : "播放";
+    if (state.isPlaying) {
+      scheduleNextFrame();
+    } else {
+      resetPlaybackTimer();
+    }
+  });
 
-dom.frameSlider.addEventListener("input", (event) => {
-  const value = Number(event.target.value);
-  if (Number.isFinite(value)) {
+  dom.prevFrame?.addEventListener("click", () => {
+    if (state.frames.length <= 1) return;
     resetPlaybackTimer();
     state.isPlaying = false;
     dom.togglePlay.textContent = "播放";
-    state.frameIndex = value;
+    state.frameIndex =
+      (state.frameIndex - 1 + state.frames.length) % state.frames.length;
     drawFrame(state.frameIndex);
-  }
-});
+  });
 
-dom.playbackSpeedButtons.forEach((button) =>
-  button.addEventListener("click", () => {
-    dom.playbackSpeedButtons.forEach((btn) =>
-      btn.classList.toggle("chip--active", btn === button)
-    );
-    const speed = Number(button.dataset.speed);
-    if (Number.isFinite(speed)) {
-      setPlaybackRate(speed);
+  dom.nextFrame?.addEventListener("click", () => {
+    if (state.frames.length <= 1) return;
+    resetPlaybackTimer();
+    state.isPlaying = false;
+    dom.togglePlay.textContent = "播放";
+    state.frameIndex = (state.frameIndex + 1) % state.frames.length;
+    drawFrame(state.frameIndex);
+  });
+
+  dom.frameSlider?.addEventListener("input", (event) => {
+    const value = Number(event.target.value);
+    if (Number.isFinite(value)) {
+      resetPlaybackTimer();
+      state.isPlaying = false;
+      dom.togglePlay.textContent = "播放";
+      state.frameIndex = value;
+      drawFrame(state.frameIndex);
     }
-  })
-);
+  });
 
-dom.fpsSlider.addEventListener("input", (event) => {
-  const value = Math.max(1, Number(event.target.value));
-  state.settings.fps = value;
-  dom.fpsLabel.textContent = `${value} fps`;
-  updateEstimate();
-});
+  dom.playbackSpeedButtons?.forEach((button) =>
+    button.addEventListener("click", () => {
+      dom.playbackSpeedButtons.forEach((btn) =>
+        btn.classList.toggle("chip--active", btn === button)
+      );
+      const speed = Number(button.dataset.speed);
+      if (Number.isFinite(speed)) {
+        setPlaybackRate(speed);
+      }
+    })
+  );
 
-dom.qualitySlider.addEventListener("input", (event) => {
-  const value = Math.max(1, Number(event.target.value));
-  state.settings.quality = value;
-  dom.qualityLabel.textContent = String(value);
-  updateEstimate();
-});
+  dom.fpsSlider?.addEventListener("input", (event) => {
+    const value = Math.max(1, Number(event.target.value));
+    state.settings.fps = value;
+    if (dom.fpsLabel) dom.fpsLabel.textContent = `${value} fps`;
+    updateEstimate();
+  });
 
-dom.compressButton.addEventListener("click", compressWebp);
-dom.themeToggle.addEventListener("click", toggleTheme);
+  dom.qualitySlider?.addEventListener("input", (event) => {
+    const value = Math.max(1, Number(event.target.value));
+    state.settings.quality = value;
+    if (dom.qualityLabel) dom.qualityLabel.textContent = String(value);
+    updateEstimate();
+  });
 
-if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
-  applyTheme(true);
-} else {
-  applyTheme(false);
+  dom.compressButton?.addEventListener("click", compressWebp);
+  dom.themeToggle?.addEventListener("click", toggleTheme);
 }
 
-log(
-  typeof ImageDecoder === "undefined"
-    ? "当前浏览器不支持 ImageDecoder，将使用退化模式。"
-    : "环境检查通过，可解析多帧 WebP 动画。"
-);
-log(
-  supportsWebpEncoding()
-    ? "检测到浏览器支持 WebP 静态编码，可离线压缩。"
-    : "浏览器未检测到 WebP 静态编码支持，导出时可能失败。"
-);
-(async () => {
-  const animatedSupport = await supportsAnimatedWebpEncoding();
-  log(
-    animatedSupport
-      ? "浏览器原生支持动画 WebP 编码，可与 WASM 编码器共同使用。"
-      : "浏览器原生动画 WebP 编码不可用，将改用 WASM 编码器处理动画。"
-  );
-})();
-
-(async () => {
-  try {
-    await ensureWasmWebpCodec();
-    log("WASM WebP 编码器加载完成，可离线压缩动画。");
-  } catch (error) {
-    log(`WASM WebP 编码器加载失败：${error.message}`);
+function runInitialChecks() {
+  if (window.matchMedia?.("(prefers-color-scheme: dark)").matches) {
+    applyTheme(true);
+  } else {
+    applyTheme(false);
   }
-})();
+
+  log(
+    typeof ImageDecoder === "undefined"
+      ? "当前浏览器不支持 ImageDecoder，将使用退化模式。"
+      : "环境检查通过，可解析多帧 WebP 动画。"
+  );
+  log(
+    supportsWebpEncoding()
+      ? "检测到浏览器支持 WebP 静态编码，可离线压缩。"
+      : "浏览器未检测到 WebP 静态编码支持，导出时可能失败。"
+  );
+
+  supportsAnimatedWebpEncoding().then((animatedSupport) => {
+    log(
+      animatedSupport
+        ? "浏览器原生支持动画 WebP 编码，可与 WASM 编码器共同使用。"
+        : "浏览器原生动画 WebP 编码不可用，将改用 WASM 编码器处理动画。"
+    );
+  });
+
+  ensureWasmWebpCodec()
+    .then(() => {
+      log("WASM WebP 编码器加载完成，可离线压缩动画。");
+    })
+    .catch((error) => {
+      log(`WASM WebP 编码器加载失败：${error.message}`);
+    });
+}
+
+function init() {
+  initDom();
+  bindEvents();
+  runInitialChecks();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init, { once: true });
+} else {
+  init();
+}
